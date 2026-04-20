@@ -33,6 +33,30 @@ mcp = FastMCP("garmin")
 garmin = Garmin()
 garmin.login(TOKEN_PATH)
 
+_profile_number_cache: str | None = None
+
+
+def _profile_number() -> str:
+    """Garmin's userProfileNumber, fetched lazily and cached. Required by
+    get_gear / get_gear_defaults, which otherwise force the caller to know
+    an opaque internal ID."""
+    global _profile_number_cache
+    if _profile_number_cache is not None:
+        return _profile_number_cache
+    for source in (garmin.get_userprofile_settings, garmin.get_user_profile):
+        data = source() or {}
+        for key in ("userProfilePk", "userProfilePK", "id", "userProfileId",
+                    "userProfileNumber", "profileId"):
+            if key in data and data[key] is not None:
+                _profile_number_cache = str(data[key])
+                return _profile_number_cache
+    raise RuntimeError(
+        "Could not determine userProfileNumber from Garmin profile endpoints."
+    )
+
+
+PROFILE_AUTO_FILL = {"get_gear", "get_gear_defaults"}
+
 
 def to_json_safe(obj):
     if isinstance(obj, (datetime, date)):
@@ -104,6 +128,12 @@ def make_tool(method, name):
     except (ValueError, TypeError):
         pass
 
+    autofill_profile = name in PROFILE_AUTO_FILL
+    if autofill_profile and sig is not None:
+        # Drop userProfileNumber from the exposed schema; the wrapper fills it.
+        new_params = [p for p in sig.parameters.values() if p.name != "userProfileNumber"]
+        sig = sig.replace(parameters=new_params)
+
     @wraps(method)
     def wrapper(*args, **kwargs):
         try:
@@ -116,6 +146,8 @@ def make_tool(method, name):
                 for new, old in renames.items():
                     if new in kwargs:
                         kwargs[old] = kwargs.pop(new)
+            if autofill_profile and "userProfileNumber" not in kwargs:
+                kwargs["userProfileNumber"] = _profile_number()
             result = method(*args, **kwargs)
         except GarminConnectAuthenticationError as e:
             raise RuntimeError(
