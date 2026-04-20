@@ -12,69 +12,24 @@ that auto-refresh indefinitely. No manual re-login needed after the first run.
 
 ## Install for Claude Desktop (macOS)
 
-Prerequisite: install [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
-if you don't have it:
+One command. It installs `uv` if missing, prompts for Garmin email/password/
+MFA, and registers the server in Claude Desktop's config:
 
 ```sh
-curl -LsSf https://astral.sh/uv/install.sh | sh
+bash <(curl -fsSL https://raw.githubusercontent.com/ethulin/garmin-mcp/master/install.sh)
 ```
 
-**Step 1 — authenticate with Garmin (one time):**
-
-```sh
-uvx --from git+https://github.com/ethulin/garmin-mcp garmin-mcp-auth
-```
-
-This prompts for your Garmin email, password, and MFA code, then writes tokens
-to `~/.garminconnect/garmin_tokens.json`. The refresh token rotates on every
-API call — in practice you only need to repeat this ~once a year.
-
-**Step 2 — register the server with Claude Desktop.** Run this one-liner; it
-merges the server into `~/Library/Application Support/Claude/claude_desktop_config.json`,
-creating the file if needed:
-
-```sh
-UVX="$(command -v uvx)" python3 - <<'PY'
-import json, os, pathlib
-cfg = pathlib.Path("~/Library/Application Support/Claude/claude_desktop_config.json").expanduser()
-cfg.parent.mkdir(parents=True, exist_ok=True)
-data = json.loads(cfg.read_text()) if cfg.exists() else {}
-data.setdefault("mcpServers", {})["garmin"] = {
-    "command": os.environ["UVX"],
-    "args": ["--from", "git+https://github.com/ethulin/garmin-mcp", "garmin-mcp"],
-}
-cfg.write_text(json.dumps(data, indent=2))
-print("Updated", cfg)
-PY
-```
-
-**Step 3 — quit Claude Desktop (⌘Q) and reopen it.** Claude Desktop only
-reloads MCP config at launch. Then in a new chat, ask *"what was my last
-activity?"* — Claude should call `get_last_activity` and return real data.
-
-### Why the absolute `uvx` path
-
-Claude Desktop launches MCP servers as GUI subprocesses, which don't inherit
-your shell `PATH`. Embedding the absolute path (`$(command -v uvx)`) in the
-config sidesteps the classic "works in Terminal, not in Claude Desktop" trap.
+Then quit Claude Desktop (⌘Q) and reopen it. Ask *"what was my last
+activity?"* in a new chat.
 
 ### Enabling writes
 
-To expose `upload_`, `delete_`, `create_`, `set_`, etc. (122 tools total
-instead of 95), re-run Step 2 with the env:
+Writes (`upload_`, `delete_`, `create_`, `set_`, etc. — 122 tools total
+instead of 95) are off by default. To enable, edit the `garmin` entry in
+`~/Library/Application Support/Claude/claude_desktop_config.json` and add:
 
-```sh
-UVX="$(command -v uvx)" python3 - <<'PY'
-import json, os, pathlib
-cfg = pathlib.Path("~/Library/Application Support/Claude/claude_desktop_config.json").expanduser()
-data = json.loads(cfg.read_text())
-data["mcpServers"]["garmin"] = {
-    "command": os.environ["UVX"],
-    "args": ["--from", "git+https://github.com/ethulin/garmin-mcp", "garmin-mcp"],
-    "env": {"GARMIN_ALLOW_WRITES": "true"},
-}
-cfg.write_text(json.dumps(data, indent=2))
-PY
+```json
+"env": { "GARMIN_ALLOW_WRITES": "true" }
 ```
 
 Be deliberate — Claude can delete a workout just as easily as fetch one.
