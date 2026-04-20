@@ -1,7 +1,7 @@
 # garmin-mcp
 
 MCP server that exposes the full `python-garminconnect` API (~95 read-only
-tools, or 122 with writes enabled) as tools for Claude Code and Claude Desktop.
+tools, or 122 with writes enabled) as tools for Claude Desktop and Claude Code.
 
 ## Why this exists
 
@@ -10,24 +10,85 @@ Garmin broke their auth in March 2026; `garth` is deprecated. This server uses
 impersonation plus the Android mobile SSO flow with DI OAuth Bearer tokens
 that auto-refresh indefinitely. No manual re-login needed after the first run.
 
-## Quick install (Claude Code, two commands)
+## Install for Claude Desktop (macOS)
 
-Prerequisites: [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
-and the `claude` CLI. On macOS:
+Prerequisite: install [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
+if you don't have it:
 
 ```sh
-# 1. One-time: authenticate with Garmin (prompts for email, password, MFA)
-uvx --from git+https://github.com/ethulin/garmin-mcp garmin-mcp-auth
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
-# 2. Register the MCP server with Claude Code
+**Step 1 — authenticate with Garmin (one time):**
+
+```sh
+uvx --from git+https://github.com/ethulin/garmin-mcp garmin-mcp-auth
+```
+
+This prompts for your Garmin email, password, and MFA code, then writes tokens
+to `~/.garminconnect/garmin_tokens.json`. The refresh token rotates on every
+API call — in practice you only need to repeat this ~once a year.
+
+**Step 2 — register the server with Claude Desktop.** Run this one-liner; it
+merges the server into `~/Library/Application Support/Claude/claude_desktop_config.json`,
+creating the file if needed:
+
+```sh
+UVX="$(command -v uvx)" python3 - <<'PY'
+import json, os, pathlib
+cfg = pathlib.Path("~/Library/Application Support/Claude/claude_desktop_config.json").expanduser()
+cfg.parent.mkdir(parents=True, exist_ok=True)
+data = json.loads(cfg.read_text()) if cfg.exists() else {}
+data.setdefault("mcpServers", {})["garmin"] = {
+    "command": os.environ["UVX"],
+    "args": ["--from", "git+https://github.com/ethulin/garmin-mcp", "garmin-mcp"],
+}
+cfg.write_text(json.dumps(data, indent=2))
+print("Updated", cfg)
+PY
+```
+
+**Step 3 — quit Claude Desktop (⌘Q) and reopen it.** Claude Desktop only
+reloads MCP config at launch. Then in a new chat, ask *"what was my last
+activity?"* — Claude should call `get_last_activity` and return real data.
+
+### Why the absolute `uvx` path
+
+Claude Desktop launches MCP servers as GUI subprocesses, which don't inherit
+your shell `PATH`. Embedding the absolute path (`$(command -v uvx)`) in the
+config sidesteps the classic "works in Terminal, not in Claude Desktop" trap.
+
+### Enabling writes
+
+To expose `upload_`, `delete_`, `create_`, `set_`, etc. (122 tools total
+instead of 95), re-run Step 2 with the env:
+
+```sh
+UVX="$(command -v uvx)" python3 - <<'PY'
+import json, os, pathlib
+cfg = pathlib.Path("~/Library/Application Support/Claude/claude_desktop_config.json").expanduser()
+data = json.loads(cfg.read_text())
+data["mcpServers"]["garmin"] = {
+    "command": os.environ["UVX"],
+    "args": ["--from", "git+https://github.com/ethulin/garmin-mcp", "garmin-mcp"],
+    "env": {"GARMIN_ALLOW_WRITES": "true"},
+}
+cfg.write_text(json.dumps(data, indent=2))
+PY
+```
+
+Be deliberate — Claude can delete a workout just as easily as fetch one.
+
+## Install for Claude Code
+
+If you also want this inside the Claude Code CLI (in addition to or instead of
+Claude Desktop), after running Step 1 above:
+
+```sh
 claude mcp add garmin -- uvx --from git+https://github.com/ethulin/garmin-mcp garmin-mcp
 ```
 
-That's it. Start a new Claude Code session and ask *"what was my last
-activity?"* — Claude will call `get_last_activity` and return real data.
-
-To enable write operations (upload/delete/create workouts, etc.), pass the
-env var at register time:
+With writes enabled:
 
 ```sh
 claude mcp add garmin \
@@ -35,47 +96,13 @@ claude mcp add garmin \
   -- uvx --from git+https://github.com/ethulin/garmin-mcp garmin-mcp
 ```
 
-## Claude Desktop (macOS) install
-
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "garmin": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/ethulin/garmin-mcp",
-        "garmin-mcp"
-      ]
-    }
-  }
-}
-```
-
-Run `uvx --from git+https://github.com/ethulin/garmin-mcp garmin-mcp-auth`
-once first to seed tokens, then restart Claude Desktop.
-
 ## Tokens
 
-Tokens live at `~/.garminconnect/garmin_tokens.json` by default (override with
-the `GARMINTOKENS` env var). Refresh tokens rotate automatically on each API
-call, so in practice you only need to re-auth once a year, if that.
+- Path: `~/.garminconnect/garmin_tokens.json` (override with `GARMINTOKENS`).
+- Refresh tokens rotate automatically; re-run `garmin-mcp-auth` only if you
+  see auth errors or you've gone ~a year without using the server.
 
-If the server ever starts reporting auth errors, re-run `garmin-mcp-auth`.
-
-## Write operations
-
-Read-only by default. Writes cover `upload_`, `create_`, `delete_`, `update_`,
-`set_`, `schedule_`, `unschedule_`, `add_`, `remove_`, `import_`, `track_`
-prefixes and are gated behind `GARMIN_ALLOW_WRITES=true`. Enable them only if
-you want Claude to be able to modify your Garmin data — it can delete a
-workout just as easily as fetch one.
-
-## Development (local venv)
-
-If you prefer a checkout instead of `uvx`:
+## Development (local checkout)
 
 ```sh
 git clone https://github.com/ethulin/garmin-mcp
@@ -88,9 +115,8 @@ venv/bin/python server.py   # blocks on stdio; Ctrl-C to quit
 
 ## Troubleshooting
 
-- **"Rate limit" errors mid-session:** back off a few minutes. The server
-  does not retry automatically.
-- **Custom token location:** set `GARMINTOKENS=/path/to/dir` in the env of
-  both the auth command and the MCP server registration.
-- **`uvx` not found:** install with
-  `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+- **"Rate limit" errors:** back off a few minutes; no automatic retry.
+- **Custom token location:** set `GARMINTOKENS=/path/to/dir` in both the
+  `garmin-mcp-auth` environment and the MCP server config `env` block.
+- **Claude Desktop doesn't see the server:** fully quit with ⌘Q (not just
+  close the window) and reopen. MCP config only reloads at launch.
